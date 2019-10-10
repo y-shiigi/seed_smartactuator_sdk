@@ -91,6 +91,7 @@ void SerialCommunication::readBufferAsync(uint8_t _size=1, uint16_t _timeout=10)
 void SerialCommunication::readBuffer(std::vector<uint8_t>& _receive_data, uint8_t _length = 1)
 {
 
+/*
   _receive_data.clear();  
   _receive_data.resize(_length);
   fill(_receive_data.begin(),_receive_data.end(),0);
@@ -103,7 +104,33 @@ void SerialCommunication::readBuffer(std::vector<uint8_t>& _receive_data, uint8_
   else{
     for(size_t i=0;i<_length;++i)_receive_data[i] = receive_buffer_[i];
   }
+*/
 
+
+  auto error_code = boost::system::error_code{};
+  int size = 0;
+  if (serial_.is_open()) {
+    while(size < _length) {
+      usleep(100); // sleep 100 us
+      int size_read;
+      std::vector<uint8_t> read_buffer(_length);
+      size_read = serial_.read_some(buffer(read_buffer, _length), error_code);
+      if ((size + size_read) <= _length) {
+	std::copy(read_buffer.begin(), read_buffer.begin()+size_read,
+		  _receive_data.begin() + size);
+      } else {
+	std::cerr << "Proto: ERROR: data length, size : " << size << ", size_read " << size_read << std::endl;
+	//flush();
+#if ((BOOST_VERSION / 100 % 1000) > 50)
+	::tcflush(serial_.lowest_layer().native_handle(), TCIOFLUSH);
+#else  // 12.04
+	::tcflush(serial_.lowest_layer().native(), TCIOFLUSH);
+	#endif
+	break;
+      }
+      size += size_read;
+    }
+  }
 }
 
 ///////////////////////////////
