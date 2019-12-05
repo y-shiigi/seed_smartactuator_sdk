@@ -53,6 +53,7 @@ namespace aero
       void setCurrent(uint8_t _number,uint8_t _max, uint8_t _down);
       void onServo(uint8_t _number,uint16_t _data);
       std::vector<int16_t> getPosition(uint8_t _number);
+      std::vector<uint16_t> getCurrent(uint8_t _number);
       std::vector<uint16_t> getTemperatureVoltage(uint8_t _number);
       std::string getVersion(uint8_t _number);
       std::vector<uint16_t> getStatus(uint8_t _number);

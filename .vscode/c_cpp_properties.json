@@ -1,0 +1,23 @@
+{
+    "configurations": [
+        {
+            "browse": {
+                "databaseFilename": "",
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "includePath": [
+                "/home/seed/ros/kinetic/devel/include/**",
+                "/opt/ros/kinetic/include/**",
+                "/home/seed/ros/kinetic/src/seed_r7_ros_pkg/seed_r7_ros_controller/include/**",
+                "/home/seed/ros/kinetic/src/seed_smartactuator_sdk/include/**",
+                "/usr/include/**"
+            ],
+            "name": "ROS",
+            "intelliSenseMode": "gcc-x64",
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
+        }
+    ],
+    "version": 4
+}
