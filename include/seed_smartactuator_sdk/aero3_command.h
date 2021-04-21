@@ -24,11 +24,19 @@ namespace aero
       void onReceive(const boost::system::error_code& _error, size_t _bytes_transferred);
       void onTimer(const boost::system::error_code& _error);
       void readBufferAsync(uint8_t _size, uint16_t _timeout);
+      void readBufferAsync(std::vector<uint8_t>& _receive_data, uint8_t _size, uint16_t _timeout);
       void readBuffer(std::vector<uint8_t>& _receive_data, uint8_t _size);
       void flushPort();
 
+      struct Header{
+        uint16_t stx;
+        uint8_t data_length;
+        uint8_t command;
+      };
+
       std::string receive_buffer_;
       bool comm_err_;
+      std::vector<uint8_t> cosmo_cmd_;
 
     private:
       io_service io_;
@@ -46,6 +54,7 @@ namespace aero
       ~AeroCommand();
 
       bool is_open_,comm_err_;
+      std::vector<uint8_t> cosmo_cmd_;
 
       bool openPort(std::string _port, unsigned int _baud_rate);
       void closePort();

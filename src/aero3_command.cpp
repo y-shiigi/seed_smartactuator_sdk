@@ -48,8 +48,13 @@ void SerialCommunication::writeAsync(std::vector<uint8_t>& _send_data)
 ///////////////////////////////
 void SerialCommunication::onReceive(const boost::system::error_code& _error, size_t _bytes_transferred)
 {
-  if (_error && _error != boost::asio::error::eof) {
-#if DEBUG
+  if (_error == boost::asio::error::operation_aborted){
+#ifdef DEBUG
+      std::cout << "Timeout " << std::endl;
+#endif
+  }
+  else if (_error && _error != boost::asio::error::eof) {
+#ifdef DEBUG
       std::cout << "receive failed: " << std::endl;
 #endif
   }
@@ -87,24 +92,92 @@ void SerialCommunication::readBufferAsync(uint8_t _size=1, uint16_t _timeout=10)
   io_.reset();
   io_.run();
 }
+///////////////////////////////
+void SerialCommunication::readBufferAsync(std::vector<uint8_t>& _receive_data, uint8_t _size = 1, uint16_t _timeout=1)
+{
+  is_canceled_ = false;
+  boost::asio::async_read(serial_,buffer(_receive_data,_receive_data.size()),boost::asio::transfer_at_least(_size),
+      boost::bind(&SerialCommunication::onReceive, this,
+          boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+  timer_.expires_from_now(boost::posix_time::milliseconds(_timeout));
+  timer_.async_wait(boost::bind(&SerialCommunication::onTimer, this, _1));
+  io_.reset();
+  io_.run();
+}
 
 void SerialCommunication::readBuffer(std::vector<uint8_t>& _receive_data, uint8_t _length = 1)
 {
-
-  _receive_data.clear();  
+  _receive_data.clear();
   _receive_data.resize(_length);
   fill(_receive_data.begin(),_receive_data.end(),0);
 
-  readBufferAsync( _length, 1000);
+  Header header;
+  int header_size = 4;
+  int break_counter = 0;
+  cosmo_cmd_.clear();
+  std::vector<uint8_t> receive_buf;
 
-  if(receive_buffer_.size() < _length){
-    std::cerr << "Read Timeout" << std::endl;
-    comm_err_ = true;
-  }
-  else{
-    for(size_t i=0;i<_length;++i)_receive_data[i] = receive_buffer_[i];
-    comm_err_ = false;
-  }
+  do{
+    receive_buf.resize(header_size);
+    readBufferAsync( receive_buf,receive_buf.size(), 1000);
+    header.stx = static_cast<uint16_t>((receive_buf[0] << 8) + receive_buf[1]);
+    header.data_length = receive_buf[2];
+    header.command = receive_buf[3];
+
+    if(header.stx == 0){    //command not received
+      std::cerr << "Read Timeout" << std::endl;
+      comm_err_ = true;
+      break;
+    }
+
+    if(header.stx == 0xDFFD) {   //in case of aero command
+      for(size_t i=0;i<header_size;++i) _receive_data[i] = receive_buf[i];
+      receive_buf.resize(header.data_length);
+      readBufferAsync(receive_buf,receive_buf.size(), 100);
+      if(receive_buf.size() != header.data_length){
+        std::cerr << "Buffer Error" << std::endl;
+        flushPort();
+        comm_err_ = true;
+        break;
+      }
+      for(size_t i=0;i<header.data_length;++i) _receive_data[i+header_size] = receive_buf[i];
+      comm_err_ = false;
+    }
+    else if(header.stx == 0xBFFB){   //in case of cosmo command
+      break_counter ++;
+      cosmo_cmd_.resize(header_size + header.data_length);
+
+      for(size_t i=0;i<header_size;++i) cosmo_cmd_[i] = receive_buf[i];
+      receive_buf.resize(header.data_length);
+      readBufferAsync(receive_buf,receive_buf.size(), 100);
+      if(receive_buf.size() != header.data_length){
+        std::cerr << "Buffer Error" << std::endl;
+        flushPort();
+        comm_err_ = true;
+        break;
+      }
+      for(size_t i=0;i<header.data_length;++i) cosmo_cmd_[i+header_size] = receive_buf[i];
+    }
+
+    else{
+        break_counter ++;
+        std::cerr << "Buffer Error" << std::endl;
+        flushPort();
+        comm_err_ = true;
+        break;
+    }
+#ifdef DEBUG
+    if(cosmo_cmd_.size() != 0){
+      for(size_t i=0;i<cosmo_cmd_.size() ;++i) std::cout << std::hex << (int)(cosmo_cmd_[i] & 0x000000FF) << std::dec;
+      std::cout << std::endl;
+      for(size_t i=0;i<_length ;++i) std::cout << std::hex << (int)(_receive_data[i] & 0x000000FF) << std::dec;
+      std::cout << std::endl;    }
+    else{
+      for(size_t i=0;i<_length ;++i) std::cout << std::hex << (int)(_receive_data[i] & 0x000000FF) << std::dec;
+      std::cout << std::endl;
+    }
+#endif
+  } while(header.stx != 0xDFFD & break_counter <5);
 
 }
 
@@ -142,7 +215,7 @@ void AeroCommand::closePort(){
 }
 
 void AeroCommand::flushPort(){
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
 }
 
 ///////////////////////////////
@@ -171,7 +244,7 @@ void AeroCommand::setCurrent(uint8_t _number,uint8_t _max, uint8_t _down)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 
 }
@@ -202,7 +275,7 @@ void AeroCommand::onServo(uint8_t _number,uint16_t _data)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 
 }
@@ -227,7 +300,7 @@ std::vector<int16_t> AeroCommand::getPosition(uint8_t _number)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 
   std::vector<uint8_t> receive_data;
@@ -268,7 +341,7 @@ std::vector<uint16_t> AeroCommand::getCurrent(uint8_t _number)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 
   std::vector<uint8_t> receive_data;
@@ -309,7 +382,7 @@ std::vector<uint16_t> AeroCommand::getTemperatureVoltage(uint8_t _number)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 
   std::vector<uint8_t> receive_data;
@@ -350,7 +423,7 @@ std::string AeroCommand::getVersion(uint8_t _number)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 
   std::vector<uint8_t> receive_data;
@@ -389,7 +462,7 @@ std::vector<uint16_t> AeroCommand::getStatus(uint8_t _number)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 
   std::vector<uint8_t> receive_data;
@@ -438,7 +511,7 @@ uint8_t _data1, uint8_t _data2, uint8_t _data3, uint8_t _data4, uint8_t _data5)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 }
 
@@ -470,7 +543,7 @@ std::vector<int16_t> AeroCommand::actuateByPosition(uint16_t _time, int16_t *_da
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 
   std::vector<uint8_t> receive_data;
@@ -479,6 +552,13 @@ std::vector<int16_t> AeroCommand::actuateByPosition(uint16_t _time, int16_t *_da
 
   serial_com_.readBuffer(receive_data,receive_data.size());
   comm_err_ = serial_com_.comm_err_;
+
+  if(serial_com_.cosmo_cmd_.size() != 0){
+    std::copy(serial_com_.cosmo_cmd_.begin(),serial_com_.cosmo_cmd_.end(),std::back_inserter(cosmo_cmd_));
+  }
+  else{
+    cosmo_cmd_.clear();
+  }
 
   std::vector<int16_t> parse_data;    //present position & robot status
   parse_data.resize(31);
@@ -514,7 +594,7 @@ std::vector<int16_t> AeroCommand::actuateBySpeed(int16_t *_data)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 
   std::vector<uint8_t> receive_data;
@@ -558,6 +638,6 @@ void AeroCommand::runScript(uint8_t _number,uint16_t _data)
   for(count_ = 2;count_ < length_-1;count_++) check_sum_ += send_data_[count_];
   send_data_[length_-1] = ~check_sum_;
 
-  serial_com_.flushPort();
+  //serial_com_.flushPort();
   serial_com_.writeAsync(send_data_);
 }
