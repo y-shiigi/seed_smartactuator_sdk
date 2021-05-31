@@ -29,6 +29,8 @@ namespace aero
       void flushPort();
 
       struct Header{
+        uint8_t stx1;
+        uint8_t stx2;
         uint16_t stx;
         uint8_t data_length;
         uint8_t command;
@@ -42,6 +44,7 @@ namespace aero
       io_service io_;
       serial_port serial_;
       deadline_timer timer_;
+      bool read_timeout_;
 
       bool is_canceled_;
       boost::asio::streambuf stream_buffer_;

@@ -7,7 +7,7 @@ using namespace controller;
 
 ///////////////////////////////
 SerialCommunication::SerialCommunication()
-: io_(),serial_(io_),timer_(io_),is_canceled_(false),comm_err_(false)
+: io_(),serial_(io_),timer_(io_),is_canceled_(false),comm_err_(false),read_timeout_(false)
 {
 }
 
@@ -52,6 +52,7 @@ void SerialCommunication::onReceive(const boost::system::error_code& _error, siz
 #ifdef DEBUG
       std::cout << "Timeout " << std::endl;
 #endif
+    read_timeout_ = true;
   }
   else if (_error && _error != boost::asio::error::eof) {
 #ifdef DEBUG
@@ -65,6 +66,7 @@ void SerialCommunication::onReceive(const boost::system::error_code& _error, siz
     stream_buffer_.consume(stream_buffer_.size());
     timer_.cancel();
     is_canceled_ = true;
+    read_timeout_ = false;
   }
 }
 
@@ -112,72 +114,94 @@ void SerialCommunication::readBuffer(std::vector<uint8_t>& _receive_data, uint8_
   fill(_receive_data.begin(),_receive_data.end(),0);
 
   Header header;
+  read_timeout_ = false;
   int header_size = 4;
   int break_counter = 0;
+  int break_count = 10;
   cosmo_cmd_.clear();
   std::vector<uint8_t> receive_buf;
-
   do{
-    receive_buf.resize(header_size);
+    //--------------- check headder stx ------------------
+    header.stx = header.stx1 = header.stx2 = 0;
+    receive_buf.resize(1);
+    read_timeout_ = false;
     readBufferAsync( receive_buf,receive_buf.size(), 1000);
-    header.stx = static_cast<uint16_t>((receive_buf[0] << 8) + receive_buf[1]);
-    header.data_length = receive_buf[2];
-    header.command = receive_buf[3];
-
-    if(header.stx == 0){    //command not received
+    if(read_timeout_){
       std::cerr << "Read Timeout" << std::endl;
       comm_err_ = true;
-      break;
+      return;
     }
-
-    if(header.stx == 0xDFFD) {   //in case of aero command
-      for(size_t i=0;i<header_size;++i) _receive_data[i] = receive_buf[i];
-      receive_buf.resize(header.data_length);
-      readBufferAsync(receive_buf,receive_buf.size(), 100);
-      if(receive_buf.size() != header.data_length){
-        std::cerr << "Buffer Error" << std::endl;
-        flushPort();
-        comm_err_ = true;
-        break;
-      }
-      for(size_t i=0;i<header.data_length;++i) _receive_data[i+header_size] = receive_buf[i];
-      comm_err_ = false;
-    }
-    else if(header.stx == 0xBFFB){   //in case of cosmo command
-      break_counter ++;
-      cosmo_cmd_.resize(header_size + header.data_length);
-
-      for(size_t i=0;i<header_size;++i) cosmo_cmd_[i] = receive_buf[i];
-      receive_buf.resize(header.data_length);
-      readBufferAsync(receive_buf,receive_buf.size(), 100);
-      if(receive_buf.size() != header.data_length){
-        std::cerr << "Buffer Error" << std::endl;
-        flushPort();
-        comm_err_ = true;
-        break;
-      }
-      for(size_t i=0;i<header.data_length;++i) cosmo_cmd_[i+header_size] = receive_buf[i];
-    }
-
     else{
+      header.stx1 = receive_buf.at(0);
+    }
+    if(header.stx1 == 0xDF || header.stx1 == 0xBF){
+      receive_buf.resize(1);
+      readBufferAsync( receive_buf,receive_buf.size(), 100);
+      header.stx2 = receive_buf.at(0);
+      header.stx = static_cast<uint16_t>((header.stx1 << 8) + header.stx2);
+      //std::cout << "stx: " << std::hex  << (int)(header.stx & 0x0000FFFF) << std::dec << std::endl;
+    }
+    else{
+      std::cout << "stx error: " << std::hex  << (int)(header.stx & 0x0000FFFF) << std::dec << std::endl;
+    }
+
+    //------------ check data in case of aero or cosmo command  -------------------
+    if(header.stx == 0xDFFD || header.stx == 0xBFFB){
+      receive_buf.resize(2);
+      readBufferAsync( receive_buf,receive_buf.size(), 100);
+      header.data_length = receive_buf.at(0);
+      header.command = receive_buf.at(1);
+      if(header.stx == 0xDFFD) {   //in case of aero command
+        _receive_data[0] = header.stx1;
+        _receive_data[1] = header.stx2;
+        _receive_data[2] = header.data_length;
+        _receive_data[3] = header.command;
+
+        receive_buf.resize(header.data_length);
+        readBufferAsync(receive_buf,receive_buf.size(), 100);
+        if(receive_buf.size() != header.data_length){
+          std::cerr << "Buffer Length Error, buffer size: " << receive_buf.size() << ", required data length: " << int(header.data_length) << std::endl;
+          comm_err_ = true;
+          return;
+        }
+        if(_receive_data.size() == header_size + header.data_length){
+          for(size_t i=0;i<header.data_length;++i) _receive_data[i+header_size] = receive_buf[i];
+        }
+        else{
+          std::cout << "size error" << std::endl;
+          fill(_receive_data.begin(),_receive_data.end(),0);
+          comm_err_ = true;
+          for(size_t i=0;i<receive_buf.size() ;++i) std::cout << std::hex << (int)(receive_buf.at(i) & 0x000000FF) << std::dec;
+          std::cout << std::endl;
+          return;
+        }
+        comm_err_ = false;
+      }
+      else if(header.stx == 0xBFFB){   //in case of cosmo command
         break_counter ++;
-        std::cerr << "Buffer Error" << std::endl;
-        flushPort();
-        comm_err_ = true;
-        break;
+        cosmo_cmd_.resize(header_size + header.data_length);
+        cosmo_cmd_[0] = header.stx1;
+        cosmo_cmd_[1] = header.stx2;
+        cosmo_cmd_[2] = header.data_length;
+        cosmo_cmd_[3] = header.command;
+
+        receive_buf.resize(header.data_length);
+        readBufferAsync(receive_buf,receive_buf.size(), 100);
+        if(receive_buf.size() != header.data_length){
+          std::cerr << "Buffer Length Error, buffer size: " << receive_buf.size() << ", required data length: " << int(header.data_length) << std::endl;
+          comm_err_ = true;
+          return;
+        }
+        for(size_t i=0;i<header.data_length;++i) cosmo_cmd_[i+header_size] = receive_buf[i];
+        //for(size_t i=0;i<cosmo_cmd_.size() ;++i) std::cout << std::hex << (int)(cosmo_cmd_[i] & 0x000000FF) << std::dec;
+      }
     }
-#ifdef DEBUG
-    if(cosmo_cmd_.size() != 0){
-      for(size_t i=0;i<cosmo_cmd_.size() ;++i) std::cout << std::hex << (int)(cosmo_cmd_[i] & 0x000000FF) << std::dec;
-      std::cout << std::endl;
-      for(size_t i=0;i<_length ;++i) std::cout << std::hex << (int)(_receive_data[i] & 0x000000FF) << std::dec;
-      std::cout << std::endl;    }
-    else{
-      for(size_t i=0;i<_length ;++i) std::cout << std::hex << (int)(_receive_data[i] & 0x000000FF) << std::dec;
-      std::cout << std::endl;
-    }
-#endif
-  } while(header.stx != 0xDFFD & break_counter <5);
+  }while(header.stx != 0xDFFD & break_counter < break_count );
+
+  if(break_counter >= break_count ){
+    std::cout << "cosmo buffre is over " << break_count << ", so resend get/send position command" << std::endl;
+    comm_err_ = true;
+  }
 
 }
 
